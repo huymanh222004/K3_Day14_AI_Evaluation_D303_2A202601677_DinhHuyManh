@@ -266,6 +266,46 @@ class OpenAIGenerator:
         return answer
 
 
+class GeminiGenerator:
+    """Gemini text generation through Google's OpenAI-compatible endpoint."""
+
+    BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+    def __init__(self, max_output_tokens: int = 300) -> None:
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        self.model = os.getenv("GEMINI_MODEL", "").strip()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is missing from .env")
+        if not self.model:
+            raise RuntimeError("GEMINI_MODEL is missing from .env")
+        self.client = OpenAI(api_key=api_key, base_url=self.BASE_URL)
+        self.max_output_tokens = max_output_tokens
+
+    def generate(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=self.max_output_tokens,
+        )
+        answer = response.choices[0].message.content
+        if not answer or not answer.strip():
+            raise RuntimeError("Gemini returned an empty answer")
+        return answer.strip()
+
+
+def create_generator() -> TextGenerator:
+    """Create the configured provider while keeping OpenAI as the default."""
+    provider = os.getenv("AI_PROVIDER", "openai").strip().lower()
+    if provider == "openai":
+        return OpenAIGenerator()
+    if provider == "gemini":
+        return GeminiGenerator()
+    raise RuntimeError(
+        f"Unsupported AI_PROVIDER {provider!r}; expected 'openai' or 'gemini'"
+    )
+
+
 @dataclass(frozen=True)
 class DomainResponse:
     question: str
@@ -299,7 +339,7 @@ class DomainAssistant:
         return cls(
             corpus_id,
             BM25Retriever(chunks),
-            generator if generator is not None else OpenAIGenerator(),
+            generator if generator is not None else create_generator(),
             top_k,
         )
 
