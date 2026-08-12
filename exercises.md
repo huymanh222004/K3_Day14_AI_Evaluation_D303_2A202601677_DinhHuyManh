@@ -30,11 +30,11 @@ critical.
 
 | Metric | Acceptable Low Score Scenario | Critical Low Score Scenario | Action Required |
 |---|---|---|---|
-| Faithfulness | | | |
-| Answer Relevance | | | |
-| Context Recall | | | |
-| Context Precision | | | |
-| Completeness | | | |
+| Faithfulness | A score near 0.7 may be temporarily acceptable for a clearly labelled summary whose harmless connective wording is absent from the corpus. | Below 0.6 is critical when the answer states deadlines, fees, eligibility, privacy, or appeal rules because unsupported claims can directly harm a student. | Inspect unsupported answer tokens and claims, strengthen the grounding instruction, and require the generator to abstain when evidence is missing. |
+| Answer Relevance | A slightly low score may be acceptable for a correct procedural answer that paraphrases the question using policy terminology. | Below 0.6 is critical when the response answers a different service or fails to address the student's requested action. | Review intent routing and prompt wording; add representative paraphrases to retrieval and regression cases. |
+| Context Recall | A score around 0.7 may be acceptable for a simple lookup when the retrieved evidence still contains every decision-critical fact. | Below 0.6 is critical for multi-document questions or when a missing chunk contains a condition, exception, amount, or effective date. | Improve chunking/query expansion or increase candidate retrieval, then verify that the required evidence enters the retrieved union. |
+| Context Precision | A moderate score can be acceptable when all required evidence is present within a small top-k and latency/context limits are not affected. | It is critical when relevant evidence is buried after noise and the generator consequently misses or contradicts it. | Add reranking, tune BM25/query terms, and compare AP@K before and after while keeping the same candidate chunks. |
+| Completeness | A score near 0.7 may be acceptable for an intentionally concise response that omits optional examples but preserves the actionable rule. | Below 0.6 is critical when the answer omits prerequisites, deadlines, exceptions, escalation steps, or privacy warnings. | Compare answer claims with expected evidence, improve synthesis instructions, and test the omitted condition explicitly. |
 
 ### Exercise 1.2 — Bias trong LLM-as-a-Judge
 
@@ -46,15 +46,28 @@ Ba bias thường gặp:
 
 **Câu 1: Thiết kế experiment phát hiện position bias với ít nhất hai conditions.**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Create matched answer pairs with equivalent quality and length. In
+> condition A, present answer X before answer Y; in condition B, reverse the order
+> while keeping the question, rubric, model, temperature, and seed (when supported)
+> fixed. Repeat across many questions and compare both win-rate changes and score
+> deltas for X and Y. A systematic advantage for whichever answer appears first is
+> evidence of position bias. A third control can score each answer independently.
 
 **Câu 2: Làm thế nào giảm verbosity bias bằng rubric design?**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Define criteria in terms of required claims, supported conditions,
+> correctness, and concision rather than detail count. State explicitly that extra
+> wording earns no credit, repetition reduces clarity, and unsupported detail is
+> penalized. Give the judge a checklist of essential facts and use the same score for
+> short and long answers that satisfy the same checklist.
 
 **Câu 3: Tại sao cần calibrate LLM judge với human labels?**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Human labels provide an external reference for measuring agreement,
+> selecting thresholds, and detecting systematic leniency, severity, or preference
+> biases. Without calibration, a stable judge can still be consistently wrong. Review
+> disagreements with domain experts, revise the rubric, and periodically re-calibrate
+> on a held-out set as policies, prompts, or judge models change.
 
 ### Exercise 1.3 — Evaluation trong CI/CD
 
@@ -62,13 +75,19 @@ Ba bias thường gặp:
 
 | Metric | Threshold | Lý do |
 |---|---:|---|
-| Faithfulness | | |
-| Answer Relevance | | |
-| Completeness | | |
+| Faithfulness | 0.80 | Unsupported student-policy claims are high risk; block when the benchmark average falls below 0.80 or regresses by more than 0.05. |
+| Answer Relevance | 0.70 | Some lexical mismatch is expected from paraphrasing, but the assistant must still address the requested service and action. |
+| Completeness | 0.75 | Missing a condition or deadline can make an otherwise correct answer unusable; additionally require all safety/adversarial cases to pass. |
 
 **Câu 2: Khi nào dùng offline evaluation, online evaluation và human review?**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Use offline evaluation before every release, model, retrieval, corpus,
+> or prompt change because a fixed versioned dataset makes results reproducible and
+> comparable. Use online evaluation after deployment for real traffic signals such as
+> satisfaction, escalation rate, latency, cost, and previously unseen intents, with
+> privacy-safe logging and alerting. Use human review to calibrate automated judges,
+> adjudicate disagreements, assess high-stakes privacy/safety cases, and approve
+> changes whose failures cannot be resolved reliably by automatic metrics alone.
 
 ---
 
