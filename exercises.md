@@ -274,7 +274,7 @@ Chọn 3–5 dimensions:
 - [x] Actionability
 - [x] Safety/privacy
 - [x] Tone/clarity
-- [ ] Dimension khác: __________
+- [ ] Dimension khác: N/A
 
 | Score | Tiêu chí domain-specific | Ví dụ response |
 |---:|---|---|
