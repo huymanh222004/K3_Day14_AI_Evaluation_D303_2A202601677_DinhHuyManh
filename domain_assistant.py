@@ -282,12 +282,28 @@ class GeminiGenerator:
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt: str) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=self.max_output_tokens,
-        )
+        response = None
+        for attempt in range(4):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    max_tokens=self.max_output_tokens,
+                )
+                break
+            except OpenAIError as exc:
+                if getattr(exc, "status_code", None) != 429 or attempt == 3:
+                    raise
+                headers = getattr(getattr(exc, "response", None), "headers", {})
+                retry_after = headers.get("retry-after") if headers else None
+                try:
+                    delay = max(float(retry_after), 1.0) if retry_after else 65.0
+                except (TypeError, ValueError):
+                    delay = 65.0
+                time.sleep(delay)
+        if response is None:
+            raise RuntimeError("Gemini request did not produce a response")
         answer = response.choices[0].message.content
         if not answer or not answer.strip():
             raise RuntimeError("Gemini returned an empty answer")
@@ -420,6 +436,8 @@ def generate_actual_answers(
     generator: TextGenerator | None = None,
     top_k: int = 5,
     progress: ProgressCallback | None = None,
+    existing_answers: list[dict[str, Any]] | None = None,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Generate the auditable actual-answer artifact for all dataset questions."""
 
@@ -445,7 +463,31 @@ def generate_actual_answers(
         f"model={model}, top_k={top_k}"
     )
 
+    completed = {
+        answer.get("id"): answer
+        for answer in (existing_answers or [])
+        if isinstance(answer, dict)
+        and isinstance(answer.get("id"), str)
+        and isinstance(answer.get("actual_answer"), str)
+        and answer.get("actual_answer", "").strip()
+        and answer.get("error") is None
+    }
     answers: list[dict[str, Any]] = []
+
+    def build_artifact() -> dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "corpus_id": assistant.corpus_id,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "agent": {
+                "name": "domain-assistant",
+                "model": model,
+                "top_k": top_k,
+                "prompt_version": "1.0",
+            },
+            "answers": answers,
+        }
+
     for index, item in enumerate(questions, start=1):
         percentage = index / total
         completed_before = index - 1
@@ -458,6 +500,12 @@ def generate_actual_answers(
             f"[{bar_before}] {completed_before:02d}/{total:02d} | "
             f"{item['id']} generating: {question_preview}"
         )
+
+        saved = completed.get(item["id"])
+        if saved is not None and saved.get("question") == item["question"]:
+            answers.append(saved)
+            notify(f"[{bar_before}] {index:02d}/{total:02d} | {item['id']} resumed")
+            continue
 
         started_at = time.perf_counter()
         try:
@@ -483,6 +531,8 @@ def generate_actual_answers(
                 "error": None,
             }
         )
+        if checkpoint is not None:
+            checkpoint(build_artifact())
 
         filled_after = round(20 * percentage)
         bar_after = "#" * filled_after + "-" * (20 - filled_after)
@@ -492,18 +542,7 @@ def generate_actual_answers(
             f"({elapsed:.1f}s, {len(response.retrieved_chunks)} chunks)"
         )
 
-    return {
-        "schema_version": "1.0",
-        "corpus_id": assistant.corpus_id,
-        "generated_at": datetime.now(UTC).isoformat(),
-        "agent": {
-            "name": "domain-assistant",
-            "model": model,
-            "top_k": top_k,
-            "prompt_version": "1.0",
-        },
-        "answers": answers,
-    }
+    return build_artifact()
 
 
 def parse_args() -> argparse.Namespace:
@@ -534,20 +573,35 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    output = args.output.expanduser().resolve()
+    existing_answers: list[dict[str, Any]] = []
+    if output.exists():
+        try:
+            existing_artifact = json.loads(output.read_text(encoding="utf-8"))
+            candidate_answers = existing_artifact.get("answers", [])
+            if isinstance(candidate_answers, list):
+                existing_answers = candidate_answers
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            existing_answers = []
+
+    def save_checkpoint(artifact: dict[str, Any]) -> None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
     try:
         artifact = generate_actual_answers(
             args.dataset,
             args.corpus_dir,
             top_k=args.top_k,
             progress=lambda message: print(message, flush=True),
+            existing_answers=existing_answers,
+            checkpoint=save_checkpoint,
         )
-        output = args.output.expanduser().resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
         print(f"Saving actual-answer artifact: {output}", flush=True)
-        output.write_text(
-            json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        save_checkpoint(artifact)
     except (OSError, OpenAIError, TypeError, ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         return 2
